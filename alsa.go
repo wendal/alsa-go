@@ -1,13 +1,14 @@
 // alsa package is the simple wrapper for C alsa binding library.
 package alsa
 
+// #cgo LDFLAGS: -lasound
 // #include <alsa/asoundlib.h>
 import "C"
 
 import (
-	"os"
-	"unsafe"
+	"errors"
 	"fmt"
+	"unsafe"
 )
 
 // Alsa stream type. Playback or capture.
@@ -110,16 +111,16 @@ func New() *Handle {
 }
 
 // Open opens a stream.
-func (handle *Handle) Open(device string, streamType StreamType, mode int) os.Error {
+func (handle *Handle) Open(device string, streamType StreamType, mode int) error {
 	cDevice := C.CString(device)
 	defer C.free(unsafe.Pointer(cDevice))
 
 	err := C.snd_pcm_open(&(handle.cHandle), cDevice,
-		_Ctypedef_snd_pcm_stream_t(streamType),
+		_Ctype_snd_pcm_stream_t(streamType),
 		_Ctype_int(mode))
 
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot open audio device '%s'. %s",
+		return errors.New(fmt.Sprintf("Cannot open audio device '%s'. %s",
 			device, strError(err)))
 	}
 
@@ -127,43 +128,43 @@ func (handle *Handle) Open(device string, streamType StreamType, mode int) os.Er
 }
 
 // ApplyHwParams changes ALSA hardware parameters for the current stream.
-func (handle *Handle) ApplyHwParams() os.Error {
+func (handle *Handle) ApplyHwParams() error {
 	var cHwParams *C.snd_pcm_hw_params_t
 
 	err := C.snd_pcm_hw_params_malloc(&cHwParams)
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot allocate hardware parameter structure. %s",
+		return errors.New(fmt.Sprintf("Cannot allocate hardware parameter structure. %s",
 			strError(err)))
 	}
 
 	err = C.snd_pcm_hw_params_any(handle.cHandle, cHwParams)
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot initialize hardware parameter structure. %s",
+		return errors.New(fmt.Sprintf("Cannot initialize hardware parameter structure. %s",
 			strError(err)))
 	}
 
 	err = C.snd_pcm_hw_params_set_access(handle.cHandle, cHwParams, C.SND_PCM_ACCESS_RW_INTERLEAVED)
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot set access type. %s",
+		return errors.New(fmt.Sprintf("Cannot set access type. %s",
 			strError(err)))
 	}
 
-	err = C.snd_pcm_hw_params_set_format(handle.cHandle, cHwParams, _Ctypedef_snd_pcm_format_t(handle.SampleFormat))
+	err = C.snd_pcm_hw_params_set_format(handle.cHandle, cHwParams, _Ctype_snd_pcm_format_t(handle.SampleFormat))
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot set sample format. %s",
+		return errors.New(fmt.Sprintf("Cannot set sample format. %s",
 			strError(err)))
 	}
 
 	var cSampleRate _Ctype_uint = _Ctype_uint(handle.SampleRate)
 	err = C.snd_pcm_hw_params_set_rate_near(handle.cHandle, cHwParams, &cSampleRate, nil)
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot set sample rate. %s",
+		return errors.New(fmt.Sprintf("Cannot set sample rate. %s",
 			strError(err)))
 	}
 
 	err = C.snd_pcm_hw_params_set_channels(handle.cHandle, cHwParams, _Ctype_uint(handle.Channels))
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot set number of channels. %s",
+		return errors.New(fmt.Sprintf("Cannot set number of channels. %s",
 			strError(err)))
 	}
 
@@ -172,7 +173,7 @@ func (handle *Handle) ApplyHwParams() os.Error {
 
 	err = C.snd_pcm_hw_params(handle.cHandle, cHwParams)
 	if err < 0 {
-		return os.NewError(fmt.Sprintf("Cannot set hardware parameters. %s",
+		return errors.New(fmt.Sprintf("Cannot set hardware parameters. %s",
 			strError(err)))
 	}
 
@@ -184,20 +185,20 @@ func (handle *Handle) ApplyHwParams() os.Error {
 // Wait waits till buffer will be free for some new portion of data or
 // delay time is runs out.
 // true ok value means that PCM stream is ready for I/O, false -- timeout occured.
-func (handle *Handle) Wait(maxDelay int) (ok bool, err os.Error) {
+func (handle *Handle) Wait(maxDelay int) (ok bool, err error) {
 	res, err := C.snd_pcm_wait(handle.cHandle, _Ctype_int(maxDelay))
 	if err != nil {
-		return false, os.NewError(fmt.Sprintf("Pool failed. %s", err))
+		return false, errors.New(fmt.Sprintf("Pool failed. %s", err))
 	}
 
 	return res > 0, nil
 }
 
 // AvailUpdate returns number of bytes ready to be read/written.
-func (handle *Handle) AvailUpdate() (freeBytes int, err os.Error) {
+func (handle *Handle) AvailUpdate() (freeBytes int, err error) {
 	frames := C.snd_pcm_avail_update(handle.cHandle)
 	if frames < 0 {
-		return 0, os.NewError(fmt.Sprintf("Retriving free buffer size failed. %s", strError(_Ctype_int(frames))))
+		return 0, errors.New(fmt.Sprintf("Retriving free buffer size failed. %s", strError(_Ctype_int(frames))))
 	}
 
 	return int(frames) * handle.FrameSize(), nil
@@ -205,20 +206,20 @@ func (handle *Handle) AvailUpdate() (freeBytes int, err os.Error) {
 
 // Write writes given PCM data.
 // Returns wrote value is total bytes was written.
-func (handle *Handle) Write(buf []byte) (wrote int, err os.Error) {
+func (handle *Handle) Write(buf []byte) (wrote int, err error) {
 	frames := len(buf) / handle.SampleSize() / handle.Channels
-	w := C.snd_pcm_writei(handle.cHandle, unsafe.Pointer(&buf[0]), _Ctypedef_snd_pcm_uframes_t(frames))
+	w := C.snd_pcm_writei(handle.cHandle, unsafe.Pointer(&buf[0]), _Ctype_snd_pcm_uframes_t(frames))
 
 	// Underrun? Retry.
 	if w == -C.EPIPE {
 		C.snd_pcm_prepare(handle.cHandle)
-		w = C.snd_pcm_writei(handle.cHandle, unsafe.Pointer(&buf[0]), _Ctypedef_snd_pcm_uframes_t(frames))
+		w = C.snd_pcm_writei(handle.cHandle, unsafe.Pointer(&buf[0]), _Ctype_snd_pcm_uframes_t(frames))
 	}
 
 	if w < 0 {
-		return 0, os.NewError(fmt.Sprintf("Write failed. %s", strError(_Ctype_int(w))))
+		return 0, errors.New(fmt.Sprintf("Write failed. %s", strError(_Ctype_int(w))))
 	}
-	
+
 	wrote = int(w)
 	wrote *= handle.FrameSize()
 
@@ -226,20 +227,20 @@ func (handle *Handle) Write(buf []byte) (wrote int, err os.Error) {
 }
 
 // Pause PCM.
-func (handle *Handle) Pause() os.Error {
+func (handle *Handle) Pause() error {
 	err := C.snd_pcm_pause(handle.cHandle, 1)
 	if err != 0 {
-		return os.NewError(fmt.Sprintf("Pause failed. %s", strError(err)))
+		return errors.New(fmt.Sprintf("Pause failed. %s", strError(err)))
 	}
 
 	return nil
 }
 
 // Unpause PCM.
-func (handle *Handle) Unpause() os.Error {
-	err := C.snd_pcm_pause(handle.cHandle, 0)	
+func (handle *Handle) Unpause() error {
+	err := C.snd_pcm_pause(handle.cHandle, 0)
 	if err != 0 {
-		return os.NewError(fmt.Sprintf("Unpause failed. %s", strError(err)))
+		return errors.New(fmt.Sprintf("Unpause failed. %s", strError(err)))
 	}
 
 	return nil
